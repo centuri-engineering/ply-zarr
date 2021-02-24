@@ -1,0 +1,12 @@
+doc/example/mesh.zarr/
+├── edge.zarr
+│   └── 0
+├── face.zarr
+│   ├── 4
+│   ├── 5
+│   ├── 6
+│   └── 7
+└── vert.zarr
+    └── 0
+
+3 directories, 6 files
