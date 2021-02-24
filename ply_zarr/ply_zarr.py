@@ -3,37 +3,36 @@
 
 """
 Write and read PLY files to a zarr store
+here is a basic ply file
 
-```
-ply
-format ascii 1.0           { ascii/binary, format version number }
-comment made by Greg Turk  { comments keyword specified, like all lines }
-comment this file is a cube
-element vertex 8           { define "vertex" element, 8 of them in file }
-property float x           { vertex contains float "x" coordinate }
-property float y           { y coordinate is also a vertex property }
-property float z           { z coordinate, too }
-element face 6             { there are 6 "face" elements in the file }
-property list uchar int vertex_index { "vertex_indices" is a list of ints }
-end_header                 { delimits the end of the header }
-0 0 0                      { start of vertex list }
-0 0 1
-0 1 1
-0 1 0
-1 0 0
-1 0 1
-1 1 1
-1 1 0
-4 0 1 2 3                  { start of face list }
-4 7 6 5 4
-4 0 4 5 1
-4 1 5 6 2
-4 2 6 7 3
-4 3 7 4 0
-```
+    ply
+    format ascii 1.0           { ascii/binary, format version number }
+    comment made by Greg Turk  { comments keyword specified, like all lines }
+    comment this file is a cube
+    element vertex 8           { define "vertex" element, 8 of them in file }
+    property float x           { vertex contains float "x" coordinate }
+    property float y           { y coordinate is also a vertex property }
+    property float z           { z coordinate, too }
+    element face 6             { there are 6 "face" elements in the file }
+    property list uchar int vertex_index { "vertex_indices" is a list of ints }
+    end_header                 { delimits the end of the header }
+    0 0 0                      { start of vertex list }
+    0 0 1
+    0 1 1
+    0 1 0
+    1 0 0
+    1 0 1
+    1 1 1
+    1 1 0
+    4 0 1 2 3                  { start of face list }
+    4 7 6 5 4
+    4 0 4 5 1
+    4 1 5 6 2
+    4 2 6 7 3
+    4 3 7 4 0
 
 The header is translated to a zarr group attrs object (JSON like)
-::code..
+
     ply_header = {
         "format": "ascii 1.0",
         "comments": [f"created by ply_zarr v0.0.1, {datetime.now().isoformat()}",],
@@ -59,17 +58,44 @@ The header is translated to a zarr group attrs object (JSON like)
 """
 
 import io
-from pathlib import Path
+import sys
+import warnings
 
-import meshio
-from meshio.ply._ply import cell_type_to_count, numpy_to_ply_dtype
+from datetime import datetime
 
 import numpy as np
-import matplotlib.pyplot as plt
+from meshio.ply._ply import cell_type_to_count, numpy_to_ply_dtype
+from meshio import CellBlock
 
-import zarr
-import dask as da
-from datetime import datetime
+
+def write(group, mesh):
+
+    # PLY header to mesh
+    fh = io.BytesIO()
+    header_from_mesh(mesh, fh, binary=False)
+    group.attrs.update(parse_ply_header(fh))
+
+    group["points"] = mesh.points
+    for elem, verts in mesh.cells_dict.items():
+        cnt = cell_type_to_count(elem)
+        group[cnt] = verts
+
+
+def to_ply(group, fh):
+
+    attrs = group.attrs.asdict()
+    header = attrs_to_ply_header(attrs)
+    fh.write(header.encode("utf-8"))
+    points = group.points
+    fh.seek(0, 2)
+    np.savetxt(fh, points, fmt="%.18f")
+    polys = [k for k in group.array_keys() if k != "points"]
+    polys.sort()
+    for p in polys:
+        sizes = int(p) * np.ones((group[p].shape[0], 1))
+        vertices = np.concatenate([sizes, group[p]], axis=1)
+        np.savetxt(fh, vertices, fmt="%d")
+        fh.seek(0, 2)
 
 
 def parse_ply_header(fh):
@@ -78,51 +104,45 @@ def parse_ply_header(fh):
     """
     fh.seek(0)
     attrs = {}
-    attrs['format'] = ""
-    attrs['comments'] = []
-    attrs['elements'] = {}
-    last_elem = None
-    if not fh.readline().decode("utf-8").startswith('ply'):
+    attrs["format"] = ""
+    attrs["comments"] = []
+    attrs["elements"] = {}
+    if not fh.readline().decode("utf-8").startswith("ply"):
         raise IOError("Not a ply file")
     for line in fh:
         line = line.decode("utf-8")
         start, *rest = line.split()
-        if start == 'format':
-            attrs['format'] = " ".join(rest)
+        if start == "format":
+            attrs["format"] = " ".join(rest)
 
         elif start == "comment":
-            attrs['comments'].append(" ".join(rest))
+            attrs["comments"].append(" ".join(rest))
 
         elif start == "element":
             elem = rest[0]
-            attrs['elements'][elem] = {
-                "size": int(rest[1]),
-                "properties": []
-            }
-            last_elem = elem
+            attrs["elements"][elem] = {"size": int(rest[1]), "properties": []}
 
         elif start == "property":
-            attrs['elements'][elem]["properties"].append(tuple(rest))
+            attrs["elements"][elem]["properties"].append(tuple(rest))
 
         elif start == "end_header":
             break
     return attrs
 
+
 def attrs_to_ply_header(attrs):
     lines = []
     lines.append("ply")
-    lines.append('format '+attrs["format"])
+    lines.append("format " + attrs["format"])
 
     if attrs.get("comments"):
-        lines.extend(['comment ' + c for c in attrs["comments"]])
+        lines.extend(["comment " + c for c in attrs["comments"]])
     for elem, elem_dict in attrs["elements"].items():
         lines.append(f"element {elem} {elem_dict['size']}")
         for prop in elem_dict["properties"]:
-            lines.append("property "+" ".join(prop))
+            lines.append("property " + " ".join(prop))
     lines.append("end_header\n")
     return "\n".join(lines)
-
-
 
 
 def header_from_mesh(mesh, fh, binary=False):
@@ -209,47 +229,15 @@ def header_from_mesh(mesh, fh, binary=False):
             if cell_dtype is None:
                 cell_dtype = cell.dtype
             if cell.dtype != cell_dtype:
-                raise WriteError()
+                raise IOError("Could not write ply header from mesh")
 
         if cell_dtype is not None:
             ply_type = numpy_to_ply_dtype[cell_dtype]
             fh.write(
-                "property list {} {} vertex_indices\n".format(
-                    "uint8", ply_type
-                ).encode("utf-8")
+                "property list {} {} vertex_indices\n".format("uint8", ply_type).encode(
+                    "utf-8"
+                )
             )
 
     # TODO other cell data
     fh.write(b"end_header\n")
-
-
-
-def write_plyzarr(group, mesh):
-
-
-    # PLY header to mesh
-    fh = io.BytesIO()
-    header_from_mesh(mesh, fh, binary=False)
-    group.attrs.update(parse_ply_header(fh))
-
-    group["points"] = mesh.points
-    for elem, verts in mesh.cells_dict.items():
-        cnt = cell_type_to_count(elem)
-        group[cnt] = verts
-
-
-def plyzarr_to_ply(group, fh):
-    attrs = group.attrs.asdict()
-    header = attrs_to_ply_header(attrs)
-    fh.write(header.encode("utf-8"))
-    points = group.points
-    fh.seek(0, 2)
-    np.savetxt(fh, points, fmt="%.18f")
-    polys = [k for k in group.array_keys() if k != "points"]
-    polys.sort()
-    print(polys)
-    for p in polys:
-        sizes = int(p) * np.ones((group[p].shape[0], 1))
-        vertices = np.concatenate([sizes, group[p]], axis=1)
-        np.savetxt(fh, vertices, fmt="%d")
-        fh.seek(0, 2)
