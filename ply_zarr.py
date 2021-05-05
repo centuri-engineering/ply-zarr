@@ -13,8 +13,9 @@ here is a basic ply file
     property float x           { vertex contains float "x" coordinate }
     property float y           { y coordinate is also a vertex property }
     property float z           { z coordinate, too }
+    property float color       { color is a custom property}
     element face 6             { there are 6 "face" elements in the file }
-    property list uchar int vertex_index { "vertex_indices" is a list of ints }
+    property list uchar int vertex_indices { "vertex_indices" is a list of ints }
     end_header                 { delimits the end of the header }
     0 0 0                      { start of vertex list }
     0 0 1
@@ -38,15 +39,16 @@ The header is translated to a zarr group attrs object (JSON like)
         "comments": [f"created by ply_zarr v0.0.1, {datetime.now().isoformat()}",],
         "elements": {
             "vertex": {
-                "size": 47,
+                "size": 8,
                 "properties": [
-                    ("double", "x"),
-                    ("double", "y"),
-                    ("double", "z")
+                    ("float", "x"),
+                    ("float", "y"),
+                    ("float", "z"),
+                    ("float", "intensity")
                 ]
             },
             "face": {
-                "size": 105,
+                "size": 6,
                 "properties": [
                     ("list", "uint8", "int32", "vertex_indices"),
                 ]
@@ -54,6 +56,16 @@ The header is translated to a zarr group attrs object (JSON like)
         }
     }
 
+The array heirarchy of the created zarr group is as follow:
+
+    group
+     ├── 4
+     │   └── vertex_indices (6, 4) int32
+     └── points
+         ├── color (8,) float64
+         ├── x (8,) int64
+         ├── y (8,) int64
+         └── z (8,) int64
 
 """
 
@@ -61,40 +73,80 @@ import io
 import sys
 import warnings
 from datetime import datetime
+from collections import defaultdict
 
 import numpy as np
-from meshio import CellBlock
-from meshio.ply._ply import numpy_to_ply_dtype
+from meshio import CellBlock, Mesh
+from meshio.ply._ply import numpy_to_ply_dtype, cell_type_from_count
 
 
 def write(group, mesh):
-
+    """Writes a MeshIO mesh to zarr-ply
+    """
     # PLY header to mesh
     fh = io.BytesIO()
     header_from_mesh(mesh, fh, binary=False)
     group.attrs.update(parse_ply_header(fh))
+    points_grp = group.create_group("points")
+    for i, coord in enumerate("xyz"[: mesh.points.shape[1]]):
+        points_grp[coord] = mesh.points[:, i]
+    for key, val in mesh.point_data.items():
+        points_grp[key] = val
 
-    group["points"] = mesh.points
-    for block in mesh.cells:
+    for i, block in enumerate(mesh.cells):
         cnt = block.data.shape[1]
-        group[cnt] = block.data
+        cnt_group = group.create_group(cnt)
+        cnt_group["vertex_indices"] = block.data
+        for key, vals in mesh.cell_data.items():
+            cnt_group[key] = np.array(vals[i])
+
+
+def read(group):
+
+    point_props = [p[-1] for p in group.attrs["elements"]["vertex"]["properties"]]
+    coords = [c for c in "xyz" if c in point_props]
+    points = np.vstack([group.points[c] for c in coords]).T
+    point_data = {}
+    for key in point_props:
+        if key in coords:
+            continue
+        point_data[key] = np.array(group.points[key])
+
+    cells = []
+    cell_data = defaultdict(list)
+    cell_props = group.attrs["elements"]["face"]["properties"]
+    for key in group.keys():
+        if not key.isnumeric():
+            continue
+        nsides = int(key)
+        cell_type = cell_type_from_count(nsides)
+        cells.append((cell_type, np.array(group[key]["vertex_indices"])))
+        for *_, prop in cell_props:
+            if prop == "vertex_indices":
+                continue
+            cell_data[prop].append(np.array(group[key][prop]),)
+
+    return Mesh(points=points, cells=cells, point_data=point_data, cell_data=cell_data)
 
 
 def to_ply(group, fh):
+    raise NotImplementedError
 
-    attrs = group.attrs.asdict()
-    header = attrs_to_ply_header(attrs)
-    fh.write(header.encode("utf-8"))
-    points = group.points
-    fh.seek(0, 2)
-    np.savetxt(fh, points, fmt="%.18f")
-    polys = [k for k in group.array_keys() if k != "points"]
-    polys.sort()
-    for p in polys:
-        sizes = int(p) * np.ones((group[p].shape[0], 1))
-        vertices = np.concatenate([sizes, group[p]], axis=1)
-        np.savetxt(fh, vertices, fmt="%d")
-        fh.seek(0, 2)
+    # attrs = group.attrs.asdict()
+    # header = attrs_to_ply_header(attrs)
+    # fh.write(header.encode("utf-8"))
+
+    # points = np.hstack([group.points.x, group.points.y, group.points.z])
+
+    # fh.seek(0, 2)
+    # np.savetxt(fh, points, fmt="%.18f")
+    # polys = [k for k in group.array_keys() if k != "points"]
+    # polys.sort()
+    # for p in polys:
+    #     sizes = int(p) * np.ones((group[p].shape[0], 1))
+    #     vertices = np.concatenate([sizes, group[p]], axis=1)
+    #     np.savetxt(fh, vertices, fmt="%d")
+    #     fh.seek(0, 2)
 
 
 def parse_ply_header(fh):
@@ -237,6 +289,17 @@ def header_from_mesh(mesh, fh, binary=False):
                     "utf-8"
                 )
             )
+        for key, vals in mesh.cell_data:
+            sample = np.asarray(vals[0])
+            prop_type = numpy_to_ply_dtype[sample.dtype]
+            if sample.dims != 1:
+                fh.write(
+                    "property list {} {} {}\n".format("uint8", prop_type, key).encode(
+                        "utf-8"
+                    )
+                )
+            else:
+                fh.write("property {} {}\n".format(prop_type, key).encode("utf-8"))
 
     # TODO other cell data
     fh.write(b"end_header\n")
