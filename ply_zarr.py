@@ -60,12 +60,11 @@ The header is translated to a zarr group attrs object (JSON like)
 import io
 import sys
 import warnings
-
 from datetime import datetime
 
 import numpy as np
-from meshio.ply._ply import cell_type_to_count, numpy_to_ply_dtype
 from meshio import CellBlock
+from meshio.ply._ply import numpy_to_ply_dtype
 
 
 def write(group, mesh):
@@ -76,9 +75,9 @@ def write(group, mesh):
     group.attrs.update(parse_ply_header(fh))
 
     group["points"] = mesh.points
-    for elem, verts in mesh.cells_dict.items():
-        cnt = cell_type_to_count(elem)
-        group[cnt] = verts
+    for block in mesh.cells:
+        cnt = block.data.shape[1]
+        group[cnt] = block.data
 
 
 def to_ply(group, fh):
@@ -205,9 +204,9 @@ def header_from_mesh(mesh, fh, binary=False):
         pd.append(value)
 
     num_cells = 0
-    for cell_type, c in mesh.cells:
-        if cell_type_to_count(cell_type):
-            num_cells += c.data.shape[0]
+    for cellblock in mesh.cells:
+        num_cells += cellblock.data.shape[0]
+
     if num_cells > 0:
         fh.write(f"element face {num_cells:d}\n".encode("utf-8"))
 
