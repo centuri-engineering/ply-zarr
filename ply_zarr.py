@@ -102,7 +102,8 @@ def write(group, mesh):
 
 
 def read(group):
-
+    """Reads from a zarr-ply group and returns a Mesh object
+    """
     point_props = [p[-1] for p in group.attrs["elements"]["vertex"]["properties"]]
     coords = [c for c in "xyz" if c in point_props]
     points = np.vstack([group.points[c] for c in coords]).T
@@ -130,23 +131,10 @@ def read(group):
 
 
 def to_ply(group, fh):
-    raise NotImplementedError
-
-    # attrs = group.attrs.asdict()
-    # header = attrs_to_ply_header(attrs)
-    # fh.write(header.encode("utf-8"))
-
-    # points = np.hstack([group.points.x, group.points.y, group.points.z])
-
-    # fh.seek(0, 2)
-    # np.savetxt(fh, points, fmt="%.18f")
-    # polys = [k for k in group.array_keys() if k != "points"]
-    # polys.sort()
-    # for p in polys:
-    #     sizes = int(p) * np.ones((group[p].shape[0], 1))
-    #     vertices = np.concatenate([sizes, group[p]], axis=1)
-    #     np.savetxt(fh, vertices, fmt="%d")
-    #     fh.seek(0, 2)
+    """This is using meshio to write back to ply
+    """
+    mesh = read(group)
+    mesh.write(fh, file_format="ply")
 
 
 def parse_ply_header(fh):
