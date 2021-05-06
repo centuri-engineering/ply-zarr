@@ -63,7 +63,18 @@ ply_header = {
     }
 }
 ```
+The array heirarchy of the created zarr group is as follows:
 
+```
+    group
+     ├── 4
+     │   └── vertex_indices (6, 4) int32
+     └── points
+         ├── color (8,) float64
+         ├── x (8,) int64
+         ├── y (8,) int64
+         └── z (8,) int64
+```
 
 ## Usage
 
@@ -78,3 +89,19 @@ root = zarr.group()
 write(root, mesh)
 
 ```
+
+## Tests
+
+```sh
+pytest tests
+```
+
+## TODO
+
+- Due to a [bug](https://github.com/nschloe/meshio/issues/1095), exporting in other formats for non-triangular meshes will not work in general
+
+- Type hints & mypy everything
+
+- Strictier handeling of data formats
+
+- xarray compatibility (if possible?)
